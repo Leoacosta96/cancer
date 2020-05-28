@@ -1,0 +1,119 @@
+import os
+import glob
+import random
+import numpy as np
+
+from sklearn.metrics import accuracy_score
+
+from keras.utils import np_utils
+from keras.models import Sequential
+from keras.preprocessing import image
+from keras.callbacks import EarlyStopping
+
+from keras.layers import Dense
+from keras.layers import Conv2D
+from keras.layers import Activation
+from keras.layers import BatchNormalization
+from keras.layers import GlobalAveragePooling2D
+
+
+# data directory
+base_dir = '../input'
+
+def get_patients():
+    patients = []
+    for f in glob.glob(base_dir+'/*'):
+        patients.append(os.path.basename(f))
+    patients = np.array(patients)
+    return patients
+
+def generator(patients, batch_size=32):
+    import time
+    t0 = time.time()
+    images_0 = []
+    images_1 = []
+    for patient in patients:
+        for f in glob.glob(base_dir+'/'+patient+'/*/*.png'):
+            x = image.load_img(f, target_size=(50, 50))
+            x = image.img_to_array(x)
+            x = np.expand_dims(x, axis=0)
+            if '/0/' in f:
+                images_0.append(x)
+            else:
+                images_1.append(x)
+    print("loading time:", time.time()-t0)
+    while True:
+        X0 = []
+        X1 = []
+        for i in range(batch_size//2):
+            r = random.randint(0,3)
+            X0.append(random.choice(images_0))
+            X1.append(random.choice(images_1))
+        X0 = np.vstack(X0)
+        X1 = np.vstack(X1)
+        X = np.vstack((X0, X1))
+        y = np.hstack(([0]*len(X0), [1]*len(X1)))
+        Y = np_utils.to_categorical(y)
+        yield X, Y
+
+def split_data(patients, test_val_perc = 0.05):
+    indices = list(range(len(patients)))
+    random.shuffle(indices)
+    sz = int(len(patients)*test_val_perc)
+    test_patients = patients[indices[:sz]]
+    valid_patients = patients[indices[sz:sz*2]]
+    train_patients = patients[indices[sz*2:]]
+    return train_patients, valid_patients, test_patients
+
+random.seed(42)
+patients = get_patients()
+train_patients, valid_patients, test_patients = split_data(patients)
+
+batch_size = 32
+train_gen = generator(train_patients, batch_size)
+valid_gen = generator(valid_patients, batch_size)
+test_gen = generator(test_patients, batch_size)
+
+X_valid = []
+Y_valid = []
+X_test = []
+Y_test = []
+for i in range(100):
+    x, y = next(valid_gen)
+    X_valid.append(x)
+    Y_valid.append(y)
+    x, y = next(test_gen)
+    X_test.append(x)
+    Y_test.append(y)
+X_valid = np.vstack(X_valid)
+X_test = np.vstack(X_test)
+Y_valid = np.vstack(Y_valid)
+Y_test = np.vstack(Y_test)
+
+model = Sequential()
+model.add(Conv2D(2, (3, 3), padding="same", input_shape=(50, 50, 3)))
+model.add(BatchNormalization())
+model.add(Activation("relu"))
+model.add(Conv2D(4, (3, 3), padding="same"))
+model.add(BatchNormalization())
+model.add(Activation("relu"))
+model.add(Conv2D(8, (3, 3), padding="same"))
+model.add(BatchNormalization())
+model.add(Activation("relu"))
+model.add(Conv2D(16, (3, 3), padding="same"))
+model.add(BatchNormalization())
+model.add(Activation("relu"))
+model.add(GlobalAveragePooling2D())
+model.add(Dense(2))
+model.add(Activation("softmax"))
+print(model.summary())
+
+model.compile(optimizer="adam", loss='binary_crossentropy', metrics=['accuracy'])
+earlystopping = EarlyStopping(monitor='val_acc', patience=10, restore_best_weights=True)
+model.fit_generator(train_gen, steps_per_epoch=10000, epochs=100, 
+                    callbacks=[earlystopping], validation_data=(X_valid, Y_valid))
+
+y_pred = model.predict(X_valid)[:,1]
+print("validation score:", accuracy_score(np.round(y_pred), np.argmax(Y_valid, axis=1)))
+y_pred = model.predict(X_test)[:,1]
+print("test score:", accuracy_score(np.round(y_pred), np.argmax(Y_test, axis=1)))
